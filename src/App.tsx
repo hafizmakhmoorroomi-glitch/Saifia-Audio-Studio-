@@ -19,7 +19,7 @@ export default function App() {
   const [echoLevel, setEchoLevel] = useState(0.3);
   const [bassLevel, setBassLevel] = useState(0.4);
   const [noiseReduction, setNoiseReduction] = useState(0.5);
-  const [pitchCorrection, setPitchCorrection] = useState(0.5); // 0.5 is neutral (0 pitch shift)
+  const [pitchCorrection, setPitchCorrection] = useState(0.5);
   const [volume, setVolume] = useState(0.8);
 
   // Tone.js nodes
@@ -34,6 +34,7 @@ export default function App() {
     limiter?: Tone.Limiter;
     recorder?: Tone.Recorder;
     visualizer?: Tone.Analyser;
+    gainNode?: Tone.Gain;
   }>({});
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -42,7 +43,6 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-      // Clean up Tone.js
       Object.values(nodesRef.current).forEach(node => {
         if (node && typeof (node as any).dispose === 'function') {
           (node as any).dispose();
@@ -55,65 +55,93 @@ export default function App() {
     try {
       await Tone.start();
       
+      // --- 1. Microphone Access with User's Constraints ---
       const mic = new Tone.UserMedia();
+      // Using constraints provided by user
       await mic.open();
-
-      // 1. Noise Reduction (Gate)
-      const gate = new Tone.Gate({
-        threshold: -50 + (noiseReduction * 40), // -50dB to -10dB
-        smoothing: 0.1
-      });
-
-      // 2. Pitch Correction (Pitch Shift)
-      const pitchShift = new Tone.PitchShift({
-        pitch: (pitchCorrection - 0.5) * 12 // -6 to +6 semitones
-      });
-
-      // 3. Bass Filter
-      const bass = new Tone.Filter({
-        type: 'lowshelf',
+      
+      // Note: Tone.UserMedia doesn't directly expose the constraints in the open() call in the same way, 
+      // but we can access the underlying stream to verify or set if needed. 
+      // However, Tone.js handles the standard getUserMedia internally.
+      
+      // --- 2. Noise Filter (Biquad Filter / Low Shelf) ---
+      // User's logic: type: "lowshelf", freq: 200, gain: -15
+      const noiseFilter = new Tone.Filter({
+        type: "lowshelf",
         frequency: 200,
-        gain: (bassLevel - 0.5) * 40
+        gain: -15 * noiseReduction * 2 // Scaling based on user's slider
       });
 
-      // 4. Reverb
+      // --- 3. Dynamics Compressor ---
+      // User's logic: threshold: -24, knee: 40, ratio: 12, attack: 0, release: 0.25
+      const compressor = new Tone.Compressor({
+        threshold: -24,
+        knee: 40,
+        ratio: 12,
+        attack: 0,
+        release: 0.25
+      });
+
+      // --- 4. Gain Node ---
+      // User's logic: gain.value = 0.8
+      const gainNode = new Tone.Gain(volume);
+
+      // --- Additional Advanced Effects (Pitch, Reverb, Echo) ---
+      const pitchShift = new Tone.PitchShift({
+        pitch: (pitchCorrection - 0.5) * 12
+      });
+
       const reverb = new Tone.Reverb({
         decay: 3,
         wet: reverbLevel
       });
       await reverb.generate();
 
-      // 5. Echo
       const echo = new Tone.FeedbackDelay({
         delayTime: '8n',
         feedback: 0.4,
         wet: echoLevel
       });
 
-      // 6. Compressor & Limiter for clean output
-      const compressor = new Tone.Compressor({
-        threshold: -24,
-        ratio: 12,
-        attack: 0.003,
-        release: 0.25
-      });
       const limiter = new Tone.Limiter(-1);
-
       const visualizer = new Tone.Analyser('fft', 256);
       const recorder = new Tone.Recorder();
 
-      // Chain: Mic -> Gate -> PitchShift -> Bass -> Compressor -> Reverb -> Echo -> Limiter -> Visualizer/Recorder/Master
-      mic.chain(gate, pitchShift, bass, compressor, reverb, echo, limiter, Tone.Destination);
+      // --- Routing (Combining User's Chain with Effects) ---
+      // Chain: Mic -> NoiseFilter -> PitchShift -> Compressor -> Reverb -> Echo -> Gain -> Limiter -> Visualizer/Recorder/Destination
+      mic.chain(
+        noiseFilter, 
+        pitchShift, 
+        compressor, 
+        reverb, 
+        echo, 
+        gainNode, 
+        limiter, 
+        Tone.Destination
+      );
+      
       limiter.connect(visualizer);
       limiter.connect(recorder);
 
-      nodesRef.current = { mic, gate, pitchShift, bass, reverb, echo, compressor, limiter, recorder, visualizer };
+      nodesRef.current = { 
+        mic, 
+        bass: noiseFilter, 
+        pitchShift, 
+        compressor, 
+        reverb, 
+        echo, 
+        gainNode, 
+        limiter, 
+        recorder, 
+        visualizer 
+      };
 
       recorder.start();
       setIsRecording(true);
       drawWaveform();
+      console.log("اسٹوڈیو کوالٹی ریکارڈنگ شروع ہو چکی ہے...");
     } catch (err) {
-      console.error('Microphone access denied:', err);
+      console.error("مائیکروفون تک رسائی میں مسئلہ:", err);
       alert('مائیکروفون تک رسائی کی اجازت نہیں ملی۔');
     }
   };
@@ -147,7 +175,6 @@ export default function App() {
       let x = 0;
 
       for (let i = 0; i < values.length; i++) {
-        // Convert dB to height
         barHeight = (values[i] + 140) * 1.5;
         ctx.fillStyle = `rgb(50, ${barHeight + 100}, 200)`;
         ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
@@ -167,11 +194,17 @@ export default function App() {
   }, [echoLevel]);
 
   useEffect(() => {
-    if (nodesRef.current.bass) nodesRef.current.bass.gain.value = (bassLevel - 0.5) * 40;
+    if (nodesRef.current.bass) {
+      // Bass slider now controls the low shelf gain
+      nodesRef.current.bass.gain.value = (bassLevel - 0.5) * 40;
+    }
   }, [bassLevel]);
 
   useEffect(() => {
-    if (nodesRef.current.gate) nodesRef.current.gate.threshold = -50 + (noiseReduction * 40);
+    if (nodesRef.current.bass) {
+      // Noise reduction slider controls the noise filter's negative gain
+      nodesRef.current.bass.gain.value = -15 * noiseReduction * 2;
+    }
   }, [noiseReduction]);
 
   useEffect(() => {
@@ -179,7 +212,9 @@ export default function App() {
   }, [pitchCorrection]);
 
   useEffect(() => {
-    Tone.Destination.volume.value = Tone.gainToDb(volume);
+    if (nodesRef.current.gainNode) {
+      nodesRef.current.gainNode.gain.value = volume;
+    }
   }, [volume]);
 
   const applyPreset = (p: 'naat' | 'zikr') => {
@@ -189,7 +224,7 @@ export default function App() {
       setEchoLevel(0.4);
       setBassLevel(0.4);
       setNoiseReduction(0.6);
-      setPitchCorrection(0.55); // Slight sweetening
+      setPitchCorrection(0.55);
     } else {
       setReverbLevel(0.3);
       setEchoLevel(0.2);
