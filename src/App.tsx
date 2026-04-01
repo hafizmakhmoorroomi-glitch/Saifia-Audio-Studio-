@@ -12,24 +12,44 @@ export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [mode, setMode] = useState<'naat' | 'zikr'>('naat');
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [mode, setMode] = useState<'naat' | 'zikr' | 'studio' | 'clear' | 'dreamy'>('naat');
   
   // Audio Effect States
-  const [reverbLevel, setReverbLevel] = useState(0.5);
-  const [echoLevel, setEchoLevel] = useState(0.3);
-  const [bassLevel, setBassLevel] = useState(0.4);
-  const [noiseReduction, setNoiseReduction] = useState(0.5);
+  const [reverbLevel, setReverbLevel] = useState(0.1); 
+  const [echoLevel, setEchoLevel] = useState(0.05); 
+  const [bassLevel, setBassLevel] = useState(0.5);
+  const [presenceLevel, setPresenceLevel] = useState(0.5); 
+  const [warmthLevel, setWarmthLevel] = useState(0.4); // New Warmth control
+  const [noiseReduction, setNoiseReduction] = useState(0.4); 
   const [pitchCorrection, setPitchCorrection] = useState(0.5);
-  const [volume, setVolume] = useState(0.8);
+  const [volume, setVolume] = useState(0.5); 
+  const [isMonitoring, setIsMonitoring] = useState(false);
+  const [isNormalizing, setIsNormalizing] = useState(false);
+  const [isMastered, setIsMastered] = useState(false);
+
+  // Granular Controls
+  const [reverbDecay, setReverbDecay] = useState(3);
+  const [reverbPreDelay, setReverbPreDelay] = useState(0.02);
+  const [echoDelay, setEchoDelay] = useState(0.4);
+  const [echoFeedback, setEchoFeedback] = useState(0.3);
+  const [compThreshold, setCompThreshold] = useState(-24);
+  const [compRatio, setCompRatio] = useState(8); // Gentler compression
+  const [compAttack, setCompAttack] = useState(0.01);
+  const [compRelease, setCompRelease] = useState(0.25);
 
   // Tone.js nodes
   const nodesRef = useRef<{
     mic?: Tone.UserMedia;
+    player?: Tone.Player;
     pitchShift?: Tone.PitchShift;
     reverb?: Tone.Reverb;
     echo?: Tone.FeedbackDelay;
-    bass?: Tone.Filter;
+    hpFilter?: Tone.Filter;
+    lpFilter?: Tone.Filter;
+    clarityFilter?: Tone.Filter;
     gate?: Tone.Gate;
+    multiband?: Tone.MultibandCompressor;
     compressor?: Tone.Compressor;
     limiter?: Tone.Limiter;
     recorder?: Tone.Recorder;
@@ -55,91 +75,86 @@ export default function App() {
     try {
       await Tone.start();
       
-      // --- 1. Microphone Access with User's Constraints ---
+      // --- 1. Microphone Access ---
       const mic = new Tone.UserMedia();
-      // Using constraints provided by user
       await mic.open();
       
-      // Note: Tone.UserMedia doesn't directly expose the constraints in the open() call in the same way, 
-      // but we can access the underlying stream to verify or set if needed. 
-      // However, Tone.js handles the standard getUserMedia internally.
+      // --- 2. Multi-Stage Noise Filtering (Crystal Clear Focus) ---
+      // 1. High Pass: Removes low-end rumble/thumps
+      const hpFilter = new Tone.Filter({
+        type: "highpass",
+        frequency: 120, // Higher cut to remove more rumble
+        rolloff: -48
+      });
+
+      // 2. Low Pass: Removes high-frequency hiss/static
+      const lpFilter = new Tone.Filter({
+        type: "lowpass",
+        frequency: 16000,
+        rolloff: -48
+      });
+
+      // 3. Peaking: Enhances vocal clarity (Presence)
+      const clarityFilter = new Tone.Filter({
+        type: "peaking",
+        frequency: 3200,
+        Q: 1.5,
+        gain: 4 
+      });
+
+      // Smoother Gate to prevent "tik-tik" chopping
+      const gate = new Tone.Gate({
+        threshold: -55, // More stable base
+        smoothing: 0.5 // Much higher smoothing to prevent rapid snapping
+      });
+
+      // Multiband Compressor to target high-frequency hiss specifically
+      const multiband = new Tone.MultibandCompressor({
+        low: { threshold: -24, ratio: 2 },
+        mid: { threshold: -24, ratio: 2 },
+        high: { threshold: -30, ratio: 10 } // Aggressive on highs to squash hiss
+      });
+
+      // --- 3. Effects Chain (for Monitoring/Mixing) ---
+      const pitchShift = new Tone.PitchShift({ pitch: (pitchCorrection - 0.5) * 12 });
       
-      // --- 2. Noise Filter (Biquad Filter / Low Shelf) ---
-      // User's logic: type: "lowshelf", freq: 200, gain: -15
-      const noiseFilter = new Tone.Filter({
-        type: "lowshelf",
-        frequency: 200,
-        gain: -15 * noiseReduction * 2 // Scaling based on user's slider
-      });
-
-      // --- 3. Dynamics Compressor ---
-      // User's logic: threshold: -24, knee: 40, ratio: 12, attack: 0, release: 0.25
       const compressor = new Tone.Compressor({
-        threshold: -24,
+        threshold: -30,
         knee: 40,
-        ratio: 12,
-        attack: 0,
-        release: 0.25
+        ratio: 3,
+        attack: 0.02, // Slower attack to avoid "tik-tik" transients
+        release: 0.5
       });
-
-      // --- 4. Gain Node ---
-      // User's logic: gain.value = 0.8
-      const gainNode = new Tone.Gain(volume);
-
-      // --- Additional Advanced Effects (Pitch, Reverb, Echo) ---
-      const pitchShift = new Tone.PitchShift({
-        pitch: (pitchCorrection - 0.5) * 12
-      });
-
-      const reverb = new Tone.Reverb({
-        decay: 3,
-        wet: reverbLevel
-      });
+      
+      const reverb = new Tone.Reverb({ decay: reverbDecay, preDelay: reverbPreDelay, wet: reverbLevel });
       await reverb.generate();
-
-      const echo = new Tone.FeedbackDelay({
-        delayTime: '8n',
-        feedback: 0.4,
-        wet: echoLevel
-      });
-
-      const limiter = new Tone.Limiter(-1);
+      const echo = new Tone.FeedbackDelay({ delayTime: echoDelay, feedback: echoFeedback, wet: echoLevel });
+      const gainNode = new Tone.Gain(volume);
+      const limiter = new Tone.Limiter(-12); // Even more headroom to prevent any digital clipping
       const visualizer = new Tone.Analyser('fft', 256);
       const recorder = new Tone.Recorder();
 
-      // --- Routing (Combining User's Chain with Effects) ---
-      // Chain: Mic -> NoiseFilter -> PitchShift -> Compressor -> Reverb -> Echo -> Gain -> Limiter -> Visualizer/Recorder/Destination
-      mic.chain(
-        noiseFilter, 
-        pitchShift, 
-        compressor, 
-        reverb, 
-        echo, 
-        gainNode, 
-        limiter, 
-        Tone.Destination
-      );
+      // --- Routing ---
+      // Mic -> HP -> LP -> Gate -> Multiband -> Clarity -> Recorder
+      mic.chain(hpFilter, lpFilter, gate, multiband, clarityFilter);
+      clarityFilter.connect(recorder);
+      
+      // Monitoring/Mixing Chain
+      clarityFilter.chain(pitchShift, compressor, reverb, echo, gainNode, limiter);
+      
+      if (isMonitoring) {
+        limiter.connect(Tone.Destination);
+      }
       
       limiter.connect(visualizer);
-      limiter.connect(recorder);
 
       nodesRef.current = { 
-        mic, 
-        bass: noiseFilter, 
-        pitchShift, 
-        compressor, 
-        reverb, 
-        echo, 
-        gainNode, 
-        limiter, 
-        recorder, 
-        visualizer 
+        mic, gate, multiband, hpFilter, lpFilter, clarityFilter, pitchShift, compressor, reverb, echo, gainNode, limiter, recorder, visualizer 
       };
 
       recorder.start();
       setIsRecording(true);
       drawWaveform();
-      console.log("اسٹوڈیو کوالٹی ریکارڈنگ شروع ہو چکی ہے...");
     } catch (err) {
       console.error("مائیکروفون تک رسائی میں مسئلہ:", err);
       alert('مائیکروفون تک رسائی کی اجازت نہیں ملی۔');
@@ -156,7 +171,118 @@ export default function App() {
       if (nodesRef.current.mic) {
         nodesRef.current.mic.close();
       }
+
+      // Auto-normalize after recording
+      autoNormalize(blob);
     }
+  };
+
+  const autoNormalize = async (blob: Blob) => {
+    setIsNormalizing(true);
+    try {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const arrayBuffer = await blob.arrayBuffer();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      
+      let maxVal = 0;
+      for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
+        const data = audioBuffer.getChannelData(i);
+        for (let j = 0; j < data.length; j++) {
+          const abs = Math.abs(data[j]);
+          if (abs > maxVal) maxVal = abs;
+        }
+      }
+      
+      if (maxVal > 0) {
+        const target = 0.85; // Target peak
+        const ratio = target / maxVal;
+        // Adjust volume to reach target peak, but cap it at 1.0
+        // We use 0.4 as the baseline 'clean' volume for Saifia style
+        const newVolume = Math.min(1, ratio * 0.4);
+        setVolume(newVolume);
+        console.log(`آواز کو خودکار طور پر متوازن (Normalize) کر دیا گیا ہے۔ ریشیو: ${ratio.toFixed(2)}`);
+      }
+      await audioContext.close();
+    } catch (e) {
+      console.error("نارملائزیشن میں مسئلہ:", e);
+    } finally {
+      setIsNormalizing(false);
+    }
+  };
+
+  const playMixedAudio = async () => {
+    if (!recordedBlob) return;
+    
+    if (isPlaying) {
+      nodesRef.current.player?.stop();
+      setIsPlaying(false);
+      return;
+    }
+
+    await Tone.start();
+    if (Tone.context.state !== 'running') {
+      await Tone.context.resume();
+    }
+
+    const url = URL.createObjectURL(recordedBlob);
+    const player = new Tone.Player();
+    
+    try {
+      await player.load(url);
+    } catch (e) {
+      console.error("آڈیو لوڈ کرنے میں مسئلہ:", e);
+      return;
+    }
+    
+    player.onstop = () => {
+      setIsPlaying(false);
+      player.dispose();
+    };
+    
+    // Connect player to existing effects chain
+    if (nodesRef.current.hpFilter && nodesRef.current.limiter) {
+      // Ensure the chain leads to speakers
+      nodesRef.current.limiter.toDestination();
+      
+      player.chain(
+        nodesRef.current.hpFilter,
+        nodesRef.current.lpFilter!,
+        nodesRef.current.gate!,
+        nodesRef.current.multiband!,
+        nodesRef.current.clarityFilter!,
+        nodesRef.current.pitchShift!,
+        nodesRef.current.compressor!,
+        nodesRef.current.reverb!,
+        nodesRef.current.echo!,
+        nodesRef.current.gainNode!,
+        nodesRef.current.limiter!
+      );
+    } else {
+      player.toDestination();
+    }
+
+    nodesRef.current.player = player;
+    player.start();
+    setIsPlaying(true);
+  };
+
+  const resetToDefaults = () => {
+    setReverbLevel(0.1);
+    setReverbDecay(3);
+    setReverbPreDelay(0.02);
+    setEchoLevel(0.05);
+    setEchoDelay(0.4);
+    setEchoFeedback(0.3);
+    setBassLevel(0.5);
+    setPresenceLevel(0.5);
+    setWarmthLevel(0.4);
+    setNoiseReduction(0.4);
+    setPitchCorrection(0.5);
+    setVolume(0.5);
+    setCompThreshold(-30);
+    setCompRatio(3);
+    setCompAttack(0.01);
+    setCompRelease(0.25);
   };
 
   const drawWaveform = () => {
@@ -186,24 +312,75 @@ export default function App() {
 
   // Update effect nodes when sliders change
   useEffect(() => {
-    if (nodesRef.current.reverb) nodesRef.current.reverb.wet.value = reverbLevel;
+    if (nodesRef.current.reverb) {
+      nodesRef.current.reverb.wet.value = reverbLevel;
+    }
   }, [reverbLevel]);
 
   useEffect(() => {
-    if (nodesRef.current.echo) nodesRef.current.echo.wet.value = echoLevel;
+    if (nodesRef.current.reverb) {
+      nodesRef.current.reverb.decay = reverbDecay;
+      nodesRef.current.reverb.preDelay = reverbPreDelay;
+      nodesRef.current.reverb.generate();
+    }
+  }, [reverbDecay, reverbPreDelay]);
+
+  useEffect(() => {
+    if (nodesRef.current.echo) {
+      nodesRef.current.echo.wet.value = echoLevel;
+    }
   }, [echoLevel]);
 
   useEffect(() => {
-    if (nodesRef.current.bass) {
-      // Bass slider now controls the low shelf gain
-      nodesRef.current.bass.gain.value = (bassLevel - 0.5) * 40;
+    if (nodesRef.current.echo) {
+      nodesRef.current.echo.delayTime.value = echoDelay;
+      nodesRef.current.echo.feedback.value = echoFeedback;
+    }
+  }, [echoDelay, echoFeedback]);
+
+  useEffect(() => {
+    if (nodesRef.current.compressor) {
+      nodesRef.current.compressor.threshold.value = compThreshold;
+      nodesRef.current.compressor.ratio.value = compRatio;
+      nodesRef.current.compressor.attack.value = compAttack;
+      nodesRef.current.compressor.release.value = compRelease;
+    }
+  }, [compThreshold, compRatio, compAttack, compRelease]);
+
+  useEffect(() => {
+    if (nodesRef.current.hpFilter) {
+      nodesRef.current.hpFilter.frequency.value = 60 + (bassLevel * 120); 
     }
   }, [bassLevel]);
 
   useEffect(() => {
-    if (nodesRef.current.bass) {
-      // Noise reduction slider controls the noise filter's negative gain
-      nodesRef.current.bass.gain.value = -15 * noiseReduction * 2;
+    if (nodesRef.current.clarityFilter) {
+      nodesRef.current.clarityFilter.gain.value = (presenceLevel * 12); // Boost clarity
+    }
+  }, [presenceLevel]);
+
+  useEffect(() => {
+    if (nodesRef.current.compressor) {
+      // Warmth through gentle saturation/compression
+      nodesRef.current.compressor.knee = 40 - (warmthLevel * 30);
+      nodesRef.current.compressor.ratio = 2 + (warmthLevel * 4);
+    }
+  }, [warmthLevel]);
+
+  useEffect(() => {
+    if (nodesRef.current.gate) {
+      // Much smoother gate for natural voice
+      nodesRef.current.gate.threshold = -65 + (noiseReduction * 40); 
+      nodesRef.current.gate.smoothing = 0.8; // Very smooth to avoid "tik-tik"
+    }
+    if (nodesRef.current.multiband) {
+      // Target high frequency hiss specifically
+      nodesRef.current.multiband.high.threshold.value = -20 - (noiseReduction * 40);
+      nodesRef.current.multiband.high.ratio.value = 1 + (noiseReduction * 20);
+    }
+    if (nodesRef.current.lpFilter) {
+      // Gentler low pass to keep voice natural but cut extreme hiss
+      nodesRef.current.lpFilter.frequency.value = 18000 - (noiseReduction * 12000);
     }
   }, [noiseReduction]);
 
@@ -212,25 +389,58 @@ export default function App() {
   }, [pitchCorrection]);
 
   useEffect(() => {
-    if (nodesRef.current.gainNode) {
-      nodesRef.current.gainNode.gain.value = volume;
+    if (nodesRef.current.limiter) {
+      nodesRef.current.limiter.threshold.value = isMastered ? -3 : -9;
     }
-  }, [volume]);
+    if (nodesRef.current.gainNode) {
+      nodesRef.current.gainNode.gain.value = isMastered ? volume * 1.5 : volume;
+    }
+  }, [isMastered, volume]);
 
-  const applyPreset = (p: 'naat' | 'zikr') => {
+  const applyPreset = (p: 'naat' | 'zikr' | 'studio' | 'clear' | 'dreamy') => {
     setMode(p);
-    if (p === 'naat') {
-      setReverbLevel(0.7);
-      setEchoLevel(0.4);
-      setBassLevel(0.4);
-      setNoiseReduction(0.6);
-      setPitchCorrection(0.55);
-    } else {
-      setReverbLevel(0.3);
-      setEchoLevel(0.2);
-      setBassLevel(0.8);
-      setNoiseReduction(0.7);
-      setPitchCorrection(0.5);
+    resetToDefaults(); // Start from clean slate
+    
+    switch(p) {
+      case 'naat':
+        setReverbLevel(0.4);
+        setReverbDecay(4);
+        setEchoLevel(0.2);
+        setEchoDelay(0.5);
+        setNoiseReduction(0.4);
+        setPitchCorrection(0.55);
+        break;
+      case 'zikr':
+        setReverbLevel(0.2);
+        setReverbDecay(2);
+        setBassLevel(0.8);
+        setNoiseReduction(0.6);
+        setCompRatio(10);
+        break;
+      case 'studio':
+        setReverbLevel(0.08); 
+        setReverbDecay(1.0);
+        setPresenceLevel(0.9); 
+        setWarmthLevel(0.6);
+        setCompRatio(4);
+        setCompThreshold(-18);
+        setNoiseReduction(0.2); 
+        setIsMastered(true);
+        break;
+      case 'clear':
+        setReverbLevel(0.05);
+        setNoiseReduction(0.5);
+        setPitchCorrection(0.5);
+        setCompRatio(2);
+        setBassLevel(0.4);
+        break;
+      case 'dreamy':
+        setReverbLevel(0.7);
+        setReverbDecay(6);
+        setEchoLevel(0.5);
+        setEchoDelay(0.6);
+        setEchoFeedback(0.6);
+        break;
     }
   };
 
@@ -248,28 +458,42 @@ export default function App() {
         className="w-full max-w-5xl bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 md:p-10 shadow-2xl relative z-10"
       >
         {/* Header */}
-        <div className="flex flex-col md:flex-row items-center justify-between mb-10 gap-6">
-          <div>
-            <h1 className="text-4xl md:text-5xl font-bold bg-gradient-to-l from-blue-400 to-emerald-400 bg-clip-text text-transparent mb-2">
-              سیفیہ آڈیو سٹوڈیو
-            </h1>
-            <p className="text-slate-400 text-lg">نعت اور ذکر کی بہترین ریکارڈنگ کے لیے</p>
+        <div className="flex flex-col md:flex-row items-center justify-between mb-8 gap-6">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-gradient-to-br from-red-500 to-orange-600 rounded-xl flex items-center justify-center shadow-lg shadow-red-900/20">
+              <Mic size={24} className="text-white" />
+            </div>
+            <div>
+              <h1 className="text-3xl md:text-4xl font-black italic tracking-tighter text-white uppercase">
+                BANDLAB <span className="text-red-500">PRO</span>
+              </h1>
+              <p className="text-slate-500 text-xs font-bold tracking-widest uppercase">Saifia Studio Edition</p>
+            </div>
           </div>
           
-          <div className="flex bg-slate-800/50 p-1 rounded-2xl border border-slate-700">
+          <div className="flex flex-wrap justify-center bg-slate-800/50 p-1 rounded-2xl border border-slate-700 gap-1">
+            {[
+              { id: 'naat', label: 'نعت', icon: <Music size={14} /> },
+              { id: 'zikr', label: 'ذکر', icon: <Wind size={14} /> },
+              { id: 'studio', label: 'سٹوڈیو', icon: <Sparkles size={14} /> },
+              { id: 'clear', label: 'صاف', icon: <Zap size={14} /> },
+              { id: 'dreamy', label: 'خوابناک', icon: <Sparkles size={14} /> }
+            ].map((p) => (
+              <button 
+                key={p.id}
+                onClick={() => applyPreset(p.id as any)}
+                className={`px-4 py-1.5 rounded-xl transition-all text-xs font-bold flex items-center gap-2 ${mode === p.id ? 'bg-red-600 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}
+              >
+                {p.icon}
+                {p.label}
+              </button>
+            ))}
             <button 
-              onClick={() => applyPreset('naat')}
-              className={`px-6 py-2 rounded-xl transition-all flex items-center gap-2 ${mode === 'naat' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
+              onClick={resetToDefaults}
+              className="px-3 py-1.5 text-slate-500 hover:text-red-400 transition-colors border-r border-slate-700"
+              title="Reset"
             >
-              <Music size={18} />
-              نعت موڈ
-            </button>
-            <button 
-              onClick={() => applyPreset('zikr')}
-              className={`px-6 py-2 rounded-xl transition-all flex items-center gap-2 ${mode === 'zikr' ? 'bg-emerald-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
-            >
-              <Wind size={18} />
-              ذکر موڈ
+              <Trash2 size={14} />
             </button>
           </div>
         </div>
@@ -322,6 +546,48 @@ export default function App() {
               onChange={setBassLevel} 
               color="indigo" 
             />
+            <EffectSlider 
+              label="آواز کی چمک (Presence)" 
+              value={presenceLevel} 
+              onChange={setPresenceLevel} 
+              color="orange" 
+              icon={<Sparkles size={14} />}
+            />
+            <EffectSlider 
+              label="آواز میں گرمجوشی (Warmth)" 
+              value={warmthLevel} 
+              onChange={setWarmthLevel} 
+              color="red" 
+              icon={<Zap size={14} />}
+            />
+
+            <div className="pt-4 border-t border-slate-700/50 space-y-4">
+              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">ایڈوانس سیٹنگز</h4>
+              <EffectSlider 
+                label="ریورب ٹائم (Decay)" 
+                value={(reverbDecay - 1) / 9} 
+                onChange={(v) => setReverbDecay(1 + v * 9)} 
+                color="blue" 
+              />
+              <EffectSlider 
+                label="ریورب پری ڈیلے (Pre-Delay)" 
+                value={reverbPreDelay / 0.1} 
+                onChange={(v) => setReverbPreDelay(v * 0.1)} 
+                color="blue" 
+              />
+              <EffectSlider 
+                label="ایکو ٹائم (Delay)" 
+                value={(echoDelay - 0.1) / 0.9} 
+                onChange={(v) => setEchoDelay(0.1 + v * 0.9)} 
+                color="emerald" 
+              />
+              <EffectSlider 
+                label="ایکو فیڈ بیک (Feedback)" 
+                value={echoFeedback / 0.9} 
+                onChange={(v) => setEchoFeedback(v * 0.9)} 
+                color="emerald" 
+              />
+            </div>
           </div>
 
           {/* Advanced Effects - Column 2 */}
@@ -352,6 +618,81 @@ export default function App() {
               color="slate" 
               icon={<Volume2 size={16} />}
             />
+
+            <div className="pt-4 border-t border-slate-700/50 space-y-4">
+              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">کمپریسر سیٹنگز</h4>
+              <EffectSlider 
+                label="تھریش ہولڈ (Threshold)" 
+                value={(compThreshold + 60) / 60} 
+                onChange={(v) => setCompThreshold(-60 + v * 60)} 
+                color="slate" 
+              />
+              <EffectSlider 
+                label="ریشیو (Ratio)" 
+                value={(compRatio - 1) / 19} 
+                onChange={(v) => setCompRatio(1 + v * 19)} 
+                color="slate" 
+              />
+              <div className="grid grid-cols-2 gap-4">
+                <EffectSlider 
+                  label="اٹیک (Attack)" 
+                  value={compAttack / 0.1} 
+                  onChange={(v) => setCompAttack(v * 0.1)} 
+                  color="slate" 
+                />
+                <EffectSlider 
+                  label="ریلیز (Release)" 
+                  value={(compRelease - 0.1) / 0.9} 
+                  onChange={(v) => setCompRelease(0.1 + v * 0.9)} 
+                  color="slate" 
+                />
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-700/50">
+              <label className="flex items-center justify-between cursor-pointer group">
+                <div className="flex flex-col">
+                  <span className="text-sm font-bold text-red-400 uppercase tracking-tighter">Auto-Mastering</span>
+                  <span className="text-[10px] text-slate-500">پروفیشنل فنشنگ اور والیم بوسٹ</span>
+                </div>
+                <div className="relative inline-flex items-center gap-2">
+                  {isMastered && (
+                    <motion.span 
+                      initial={{ opacity: 0, x: 10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      className="text-[8px] bg-red-500 text-white px-1.5 py-0.5 rounded font-black uppercase tracking-tighter"
+                    >
+                      Active
+                    </motion.span>
+                  )}
+                  <input 
+                    type="checkbox" 
+                    checked={isMastered} 
+                    onChange={(e) => setIsMastered(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-600"></div>
+                </div>
+              </label>
+            </div>
+
+            <div className="pt-4 border-t border-slate-700/50">
+              <label className="flex items-center justify-between cursor-pointer group">
+                <div className="flex flex-col">
+                  <span className="text-sm font-medium text-slate-200">لائیو مانیٹرنگ (سماعت)</span>
+                  <span className="text-[10px] text-slate-500">صرف ہیڈ فون کے ساتھ استعمال کریں</span>
+                </div>
+                <div className="relative inline-flex items-center">
+                  <input 
+                    type="checkbox" 
+                    checked={isMonitoring} 
+                    onChange={(e) => setIsMonitoring(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                </div>
+              </label>
+            </div>
           </div>
 
           {/* Recording & Playback - Column 3 */}
@@ -386,18 +727,39 @@ export default function App() {
                   exit={{ opacity: 0, scale: 0.9 }}
                   className="w-full space-y-4 pt-4 border-t border-slate-700/50"
                 >
-                  <audio src={audioUrl} controls className="w-full h-10 rounded-lg" />
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[10px] text-emerald-400 text-center font-bold uppercase tracking-widest animate-pulse">
+                        مکسنگ موڈ فعال ہے - سلائیڈرز استعمال کریں
+                      </p>
+                      <button 
+                        onClick={playMixedAudio}
+                        className={`w-full py-3 rounded-xl flex items-center justify-center gap-2 font-semibold transition-all ${isPlaying ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/40' : 'bg-slate-700 text-slate-200 hover:bg-slate-600'}`}
+                      >
+                        {isPlaying ? <Square size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
+                        {isPlaying ? "سننا بند کریں" : "مکسنگ کے ساتھ سنیں"}
+                      </button>
+                    
+                    <button 
+                      onClick={() => recordedBlob && autoNormalize(recordedBlob)}
+                      disabled={isNormalizing}
+                      className="w-full py-2 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-2 border border-indigo-500/30"
+                    >
+                      <Sparkles size={14} className={isNormalizing ? "animate-spin" : ""} />
+                      {isNormalizing ? "متوازن کیا جا رہا ہے..." : "آواز متوازن کریں (Normalize)"}
+                    </button>
+                  </div>
+
                   <div className="flex gap-3">
                     <a 
                       href={audioUrl} 
                       download={`Saifia_Studio_${mode}_${new Date().getTime()}.webm`}
-                      className="flex-1 bg-blue-600 hover:bg-blue-500 py-3 rounded-xl flex items-center justify-center gap-2 font-semibold transition-colors"
+                      className="flex-1 bg-blue-600 hover:bg-blue-500 py-3 rounded-xl flex items-center justify-center gap-2 font-semibold transition-colors text-sm"
                     >
                       <Download size={18} />
                       محفوظ کریں (Save)
                     </a>
                     <button 
-                      onClick={() => { setAudioUrl(null); setRecordedBlob(null); }}
+                      onClick={() => { setAudioUrl(null); setRecordedBlob(null); setIsPlaying(false); }}
                       className="p-3 bg-slate-700 hover:bg-red-900/40 hover:text-red-400 rounded-xl transition-all"
                     >
                       <Trash2 size={20} />
