@@ -4,25 +4,9 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Mic, Square, Play, Download, Settings, Volume2, Music, Wind, Trash2 } from 'lucide-react';
+import { Mic, Square, Play, Download, Settings, Volume2, Music, Wind, Trash2, Sparkles, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-
-// --- Audio Engine Helpers ---
-
-const createReverb = (audioContext: AudioContext, duration: number, decay: number) => {
-  const sampleRate = audioContext.sampleRate;
-  const length = sampleRate * duration;
-  const impulse = audioContext.createBuffer(2, length, sampleRate);
-  for (let i = 0; i < 2; i++) {
-    const channelData = impulse.getChannelData(i);
-    for (let j = 0; j < length; j++) {
-      channelData[j] = (Math.random() * 2 - 1) * Math.pow(1 - j / length, decay);
-    }
-  }
-  const convolver = audioContext.createConvolver();
-  convolver.buffer = impulse;
-  return convolver;
-};
+import * as Tone from 'tone';
 
 export default function App() {
   const [isRecording, setIsRecording] = useState(false);
@@ -34,130 +18,98 @@ export default function App() {
   const [reverbLevel, setReverbLevel] = useState(0.5);
   const [echoLevel, setEchoLevel] = useState(0.3);
   const [bassLevel, setBassLevel] = useState(0.4);
+  const [noiseReduction, setNoiseReduction] = useState(0.5);
+  const [pitchCorrection, setPitchCorrection] = useState(0.5); // 0.5 is neutral (0 pitch shift)
   const [volume, setVolume] = useState(0.8);
 
-  // Audio Context & Nodes
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const analyzerRef = useRef<AnalyserNode | null>(null);
+  // Tone.js nodes
+  const nodesRef = useRef<{
+    mic?: Tone.UserMedia;
+    pitchShift?: Tone.PitchShift;
+    reverb?: Tone.Reverb;
+    echo?: Tone.FeedbackDelay;
+    bass?: Tone.Filter;
+    gate?: Tone.Gate;
+    compressor?: Tone.Compressor;
+    limiter?: Tone.Limiter;
+    recorder?: Tone.Recorder;
+    visualizer?: Tone.Analyser;
+  }>({});
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameRef = useRef<number | null>(null);
-
-  // Effect Nodes
-  const nodesRef = useRef<{
-    input?: MediaStreamAudioSourceNode;
-    bass?: BiquadFilterNode;
-    echo?: DelayNode;
-    echoFeedback?: GainNode;
-    echoLevel?: GainNode;
-    reverb?: ConvolverNode;
-    reverbLevel?: GainNode;
-    compressor?: DynamicsCompressorNode;
-    masterGain?: GainNode;
-    destination?: MediaStreamAudioDestinationNode;
-  }>({});
 
   useEffect(() => {
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-      if (audioContextRef.current) audioContextRef.current.close();
+      // Clean up Tone.js
+      Object.values(nodesRef.current).forEach(node => {
+        if (node && typeof (node as any).dispose === 'function') {
+          (node as any).dispose();
+        }
+      });
     };
   }, []);
 
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }});
-      streamRef.current = stream;
-
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      audioContextRef.current = audioContext;
-
-      const input = audioContext.createMediaStreamAudioSource(stream);
-      const destination = audioContext.createMediaStreamAudioDestination();
+      await Tone.start();
       
-      // 1. Bass Filter (Low Shelf)
-      const bass = audioContext.createBiquadFilter();
-      bass.type = 'lowshelf';
-      bass.frequency.value = 200;
-      bass.gain.value = (bassLevel - 0.5) * 40; // -20dB to +20dB
+      const mic = new Tone.UserMedia();
+      await mic.open();
 
-      // 2. Echo (Delay)
-      const echo = audioContext.createDelay(1.0);
-      echo.delayTime.value = 0.4;
-      const echoFeedback = audioContext.createGain();
-      echoFeedback.gain.value = 0.4;
-      const echoLevelNode = audioContext.createGain();
-      echoLevelNode.gain.value = echoLevel;
+      // 1. Noise Reduction (Gate)
+      const gate = new Tone.Gate({
+        threshold: -50 + (noiseReduction * 40), // -50dB to -10dB
+        smoothing: 0.1
+      });
 
-      // 3. Reverb
-      const reverb = createReverb(audioContext, 3, 2);
-      const reverbLevelNode = audioContext.createGain();
-      reverbLevelNode.gain.value = reverbLevel;
+      // 2. Pitch Correction (Pitch Shift)
+      const pitchShift = new Tone.PitchShift({
+        pitch: (pitchCorrection - 0.5) * 12 // -6 to +6 semitones
+      });
 
-      // 4. Compressor (for clean vocals)
-      const compressor = audioContext.createDynamicsCompressor();
-      compressor.threshold.setValueAtTime(-24, audioContext.currentTime);
-      compressor.knee.setValueAtTime(40, audioContext.currentTime);
-      compressor.ratio.setValueAtTime(12, audioContext.currentTime);
-      compressor.attack.setValueAtTime(0, audioContext.currentTime);
-      compressor.release.setValueAtTime(0.25, audioContext.currentTime);
+      // 3. Bass Filter
+      const bass = new Tone.Filter({
+        type: 'lowshelf',
+        frequency: 200,
+        gain: (bassLevel - 0.5) * 40
+      });
 
-      // 5. Master Gain
-      const masterGain = audioContext.createGain();
-      masterGain.gain.value = volume;
+      // 4. Reverb
+      const reverb = new Tone.Reverb({
+        decay: 3,
+        wet: reverbLevel
+      });
+      await reverb.generate();
 
-      // 6. Analyzer for visualization
-      const analyzer = audioContext.createAnalyser();
-      analyzer.fftSize = 256;
-      analyzerRef.current = analyzer;
+      // 5. Echo
+      const echo = new Tone.FeedbackDelay({
+        delayTime: '8n',
+        feedback: 0.4,
+        wet: echoLevel
+      });
 
-      // --- Connections ---
-      input.connect(bass);
-      bass.connect(compressor);
-      
-      // Parallel Echo
-      compressor.connect(echo);
-      echo.connect(echoFeedback);
-      echoFeedback.connect(echo);
-      echo.connect(echoLevelNode);
-      echoLevelNode.connect(masterGain);
+      // 6. Compressor & Limiter for clean output
+      const compressor = new Tone.Compressor({
+        threshold: -24,
+        ratio: 12,
+        attack: 0.003,
+        release: 0.25
+      });
+      const limiter = new Tone.Limiter(-1);
 
-      // Parallel Reverb
-      compressor.connect(reverb);
-      reverb.connect(reverbLevelNode);
-      reverbLevelNode.connect(masterGain);
+      const visualizer = new Tone.Analyser('fft', 256);
+      const recorder = new Tone.Recorder();
 
-      // Direct signal
-      compressor.connect(masterGain);
+      // Chain: Mic -> Gate -> PitchShift -> Bass -> Compressor -> Reverb -> Echo -> Limiter -> Visualizer/Recorder/Master
+      mic.chain(gate, pitchShift, bass, compressor, reverb, echo, limiter, Tone.Destination);
+      limiter.connect(visualizer);
+      limiter.connect(recorder);
 
-      // Final Output
-      masterGain.connect(analyzer);
-      masterGain.connect(destination);
-      masterGain.connect(audioContext.destination);
+      nodesRef.current = { mic, gate, pitchShift, bass, reverb, echo, compressor, limiter, recorder, visualizer };
 
-      nodesRef.current = { input, bass, echo, echoFeedback, echoLevel: echoLevelNode, reverb, reverbLevel: reverbLevelNode, compressor, masterGain, destination };
-
-      const mediaRecorder = new MediaRecorder(destination.stream);
-      mediaRecorderRef.current = mediaRecorder;
-      chunksRef.current = [];
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        setRecordedBlob(blob);
-        setAudioUrl(URL.createObjectURL(blob));
-      };
-
-      mediaRecorder.start();
+      recorder.start();
       setIsRecording(true);
       drawWaveform();
     } catch (err) {
@@ -166,36 +118,37 @@ export default function App() {
     }
   };
 
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
+  const stopRecording = async () => {
+    if (nodesRef.current.recorder && isRecording) {
+      const blob = await nodesRef.current.recorder.stop();
+      setRecordedBlob(blob);
+      setAudioUrl(URL.createObjectURL(blob));
       setIsRecording(false);
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
+      
+      if (nodesRef.current.mic) {
+        nodesRef.current.mic.close();
       }
     }
   };
 
   const drawWaveform = () => {
-    if (!canvasRef.current || !analyzerRef.current) return;
+    if (!canvasRef.current || !nodesRef.current.visualizer) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const bufferLength = analyzerRef.current.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-
     const render = () => {
       animationFrameRef.current = requestAnimationFrame(render);
-      analyzerRef.current!.getByteFrequencyData(dataArray);
+      const values = nodesRef.current.visualizer!.getValue() as Float32Array;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const barWidth = (canvas.width / bufferLength) * 2.5;
+      const barWidth = (canvas.width / values.length) * 2.5;
       let barHeight;
       let x = 0;
 
-      for (let i = 0; i < bufferLength; i++) {
-        barHeight = dataArray[i] / 2;
+      for (let i = 0; i < values.length; i++) {
+        // Convert dB to height
+        barHeight = (values[i] + 140) * 1.5;
         ctx.fillStyle = `rgb(50, ${barHeight + 100}, 200)`;
         ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
         x += barWidth + 1;
@@ -206,11 +159,11 @@ export default function App() {
 
   // Update effect nodes when sliders change
   useEffect(() => {
-    if (nodesRef.current.reverbLevel) nodesRef.current.reverbLevel.gain.value = reverbLevel;
+    if (nodesRef.current.reverb) nodesRef.current.reverb.wet.value = reverbLevel;
   }, [reverbLevel]);
 
   useEffect(() => {
-    if (nodesRef.current.echoLevel) nodesRef.current.echoLevel.gain.value = echoLevel;
+    if (nodesRef.current.echo) nodesRef.current.echo.wet.value = echoLevel;
   }, [echoLevel]);
 
   useEffect(() => {
@@ -218,7 +171,15 @@ export default function App() {
   }, [bassLevel]);
 
   useEffect(() => {
-    if (nodesRef.current.masterGain) nodesRef.current.masterGain.gain.value = volume;
+    if (nodesRef.current.gate) nodesRef.current.gate.threshold = -50 + (noiseReduction * 40);
+  }, [noiseReduction]);
+
+  useEffect(() => {
+    if (nodesRef.current.pitchShift) nodesRef.current.pitchShift.pitch = (pitchCorrection - 0.5) * 12;
+  }, [pitchCorrection]);
+
+  useEffect(() => {
+    Tone.Destination.volume.value = Tone.gainToDb(volume);
   }, [volume]);
 
   const applyPreset = (p: 'naat' | 'zikr') => {
@@ -227,10 +188,14 @@ export default function App() {
       setReverbLevel(0.7);
       setEchoLevel(0.4);
       setBassLevel(0.4);
+      setNoiseReduction(0.6);
+      setPitchCorrection(0.55); // Slight sweetening
     } else {
       setReverbLevel(0.3);
       setEchoLevel(0.2);
       setBassLevel(0.8);
+      setNoiseReduction(0.7);
+      setPitchCorrection(0.5);
     }
   };
 
@@ -245,7 +210,7 @@ export default function App() {
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-4xl bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 md:p-10 shadow-2xl relative z-10"
+        className="w-full max-w-5xl bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 md:p-10 shadow-2xl relative z-10"
       >
         {/* Header */}
         <div className="flex flex-col md:flex-row items-center justify-between mb-10 gap-6">
@@ -278,7 +243,7 @@ export default function App() {
         <div className="relative w-full h-48 bg-black/40 rounded-2xl mb-8 border border-slate-800 overflow-hidden group">
           <canvas 
             ref={canvasRef} 
-            width={800} 
+            width={1000} 
             height={200} 
             className="w-full h-full"
           />
@@ -296,12 +261,12 @@ export default function App() {
         </div>
 
         {/* Controls Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
-          {/* Effects Sliders */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-10">
+          {/* Effects Sliders - Column 1 */}
           <div className="space-y-6 bg-slate-800/30 p-6 rounded-2xl border border-slate-800/50">
             <div className="flex items-center gap-4">
               <Settings className="text-blue-400" size={20} />
-              <h3 className="font-semibold text-slate-200">آڈیو ایفیکٹس</h3>
+              <h3 className="font-semibold text-slate-200">بنیادی ایفیکٹس</h3>
             </div>
             
             <EffectSlider 
@@ -322,6 +287,29 @@ export default function App() {
               onChange={setBassLevel} 
               color="indigo" 
             />
+          </div>
+
+          {/* Advanced Effects - Column 2 */}
+          <div className="space-y-6 bg-slate-800/30 p-6 rounded-2xl border border-slate-800/50">
+            <div className="flex items-center gap-4">
+              <Sparkles className="text-emerald-400" size={20} />
+              <h3 className="font-semibold text-slate-200">جدید فیچرز</h3>
+            </div>
+            
+            <EffectSlider 
+              label="آواز صاف کریں (Noise Reduction)" 
+              value={noiseReduction} 
+              onChange={setNoiseReduction} 
+              color="emerald" 
+              icon={<Zap size={14} />}
+            />
+            <EffectSlider 
+              label="آواز ٹیون کریں (Pitch/Auto-Tune)" 
+              value={pitchCorrection} 
+              onChange={setPitchCorrection} 
+              color="blue" 
+              icon={<Sparkles size={14} />}
+            />
             <EffectSlider 
               label="ماسٹر والیم" 
               value={volume} 
@@ -331,7 +319,7 @@ export default function App() {
             />
           </div>
 
-          {/* Recording & Playback */}
+          {/* Recording & Playback - Column 3 */}
           <div className="flex flex-col justify-center items-center gap-6 bg-slate-800/30 p-6 rounded-2xl border border-slate-800/50">
             <div className="flex gap-4">
               {!isRecording ? (
