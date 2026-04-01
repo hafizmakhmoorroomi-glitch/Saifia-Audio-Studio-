@@ -1,0 +1,7 @@
+{
+  "name": "سیفیہ آڈیو سٹوڈیو - Saifia Audio Studio",
+  "description": "نعت اور ذکر کی ریکارڈنگ کے لیے ایک پیشہ ورانہ آڈیو سٹوڈیو جس میں ریورب، ایکو اور بیس کے اثرات شامل ہیں۔",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
