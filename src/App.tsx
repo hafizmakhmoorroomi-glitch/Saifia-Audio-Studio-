@@ -362,8 +362,8 @@ export default function App() {
   useEffect(() => {
     if (nodesRef.current.compressor) {
       // Warmth through gentle saturation/compression
-      nodesRef.current.compressor.knee = 40 - (warmthLevel * 30);
-      nodesRef.current.compressor.ratio = 2 + (warmthLevel * 4);
+      nodesRef.current.compressor.knee.value = 40 - (warmthLevel * 30);
+      nodesRef.current.compressor.ratio.value = 2 + (warmthLevel * 4);
     }
   }, [warmthLevel]);
 
@@ -498,6 +498,134 @@ export default function App() {
           </div>
         </div>
 
+        {/* Top Recording Section (Condenser Mic Visual) */}
+        <div className="flex flex-col items-center justify-center mb-8 relative">
+          {/* Condenser Mic Visual */}
+          <div className="relative mb-4">
+            <motion.div 
+              animate={isRecording ? { 
+                scale: [1, 1.02, 1],
+                boxShadow: ["0 0 20px rgba(239,68,68,0)", "0 0 40px rgba(239,68,68,0.2)", "0 0 20px rgba(239,68,68,0)"]
+              } : {}}
+              transition={{ repeat: Infinity, duration: 2 }}
+              className="w-28 h-44 bg-gradient-to-b from-slate-700 to-slate-900 rounded-t-[3rem] border-4 border-slate-700 relative shadow-2xl flex flex-col items-center pt-6 overflow-hidden"
+            >
+              {/* Mic Grille (Mesh) */}
+              <div className="absolute top-0 left-0 w-full h-1/2 bg-slate-800/80 z-0 border-b-2 border-slate-700">
+                <div className="absolute inset-0 opacity-40" style={{ backgroundImage: 'radial-gradient(#000 1px, transparent 0)', backgroundSize: '3px 3px' }} />
+              </div>
+              
+              {/* Mic Internals (Diaphragm) */}
+              <motion.div 
+                animate={isRecording ? { scale: [1, 1.1, 1], opacity: [0.3, 0.6, 0.3] } : { opacity: 0.2 }}
+                className="w-14 h-14 rounded-full bg-orange-500/40 blur-md z-10 mt-2"
+              />
+              
+              {/* Mic Body Details */}
+              <div className="z-20 flex flex-col items-center mt-auto mb-6">
+                <div className="w-16 h-1 bg-slate-600 rounded-full mb-4 opacity-50" />
+                <div className="w-10 h-10 rounded-full bg-black/40 flex items-center justify-center border border-slate-700/50">
+                  <Mic size={20} className={isRecording ? "text-red-500 animate-pulse" : "text-slate-500"} />
+                </div>
+              </div>
+              
+              {/* Status Light */}
+              <div className={`absolute bottom-4 w-2 h-2 rounded-full z-20 ${isRecording ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.8)]' : 'bg-slate-950'}`} />
+            </motion.div>
+            
+            {/* Mic Shock Mount / Stand */}
+            <div className="w-10 h-14 bg-gradient-to-r from-slate-800 to-slate-700 mx-auto -mt-1 rounded-b-xl border-x-4 border-b-4 border-slate-700 relative z-0">
+               <div className="absolute top-2 left-[-10px] w-[calc(100%+20px)] h-1 bg-slate-700 rounded-full" />
+            </div>
+            <div className="w-20 h-3 bg-slate-800 mx-auto rounded-full mt-1 shadow-inner" />
+          </div>
+
+          {/* Recording Buttons */}
+          <div className="flex flex-col items-center gap-4 w-full">
+            <div className="flex gap-6 items-center">
+              {!isRecording ? (
+                <button 
+                  onClick={startRecording}
+                  className="w-24 h-24 bg-red-600 hover:bg-red-500 rounded-full flex items-center justify-center shadow-2xl shadow-red-900/40 transition-all hover:scale-110 active:scale-95 group border-4 border-red-400/20"
+                >
+                  <Mic size={40} className="text-white group-hover:scale-110 transition-transform" />
+                </button>
+              ) : (
+                <button 
+                  onClick={stopRecording}
+                  className="w-24 h-24 bg-slate-100 hover:bg-white text-black rounded-full flex items-center justify-center shadow-2xl transition-all hover:scale-110 active:scale-95 border-4 border-slate-300/20"
+                >
+                  <Square size={40} fill="currentColor" />
+                </button>
+              )}
+            </div>
+            
+            <div className="text-center">
+              <p className={`text-xl font-black italic tracking-tighter uppercase ${isRecording ? 'text-red-500 animate-pulse' : 'text-white'}`}>
+                {isRecording ? "Recording..." : "Start Recording"}
+              </p>
+              {isRecording && (
+                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em] mt-1">
+                  Studio Quality Active
+                </p>
+              )}
+            </div>
+
+            <AnimatePresence>
+              {audioUrl && (
+                <motion.div 
+                  initial={{ opacity: 0, y: -10, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  className="flex flex-col items-center gap-4 w-full max-w-lg bg-slate-800/40 backdrop-blur-md p-5 rounded-3xl border border-slate-700/50 shadow-xl"
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                    <p className="text-[10px] text-emerald-400 font-black uppercase tracking-widest">
+                      Recording Ready - Mix & Master Below
+                    </p>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 w-full">
+                    <button 
+                      onClick={playMixedAudio}
+                      className={`py-3 rounded-2xl flex items-center justify-center gap-2 font-bold transition-all ${isPlaying ? 'bg-emerald-600 text-white shadow-lg' : 'bg-slate-700 text-slate-200 hover:bg-slate-600'}`}
+                    >
+                      {isPlaying ? <Square size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
+                      {isPlaying ? "Stop" : "Listen"}
+                    </button>
+                    
+                    <button 
+                      onClick={() => recordedBlob && autoNormalize(recordedBlob)}
+                      disabled={isNormalizing}
+                      className="py-3 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 rounded-2xl text-xs font-bold transition-all flex items-center justify-center gap-2 border border-indigo-500/30"
+                    >
+                      <Sparkles size={16} className={isNormalizing ? "animate-spin" : ""} />
+                      {isNormalizing ? "Balancing..." : "Normalize"}
+                    </button>
+
+                    <a 
+                      href={audioUrl} 
+                      download={`Saifia_Studio_${mode}.webm`}
+                      className="bg-red-600 hover:bg-red-500 py-3 rounded-2xl flex items-center justify-center gap-2 font-bold transition-colors text-sm shadow-lg shadow-red-900/20"
+                    >
+                      <Download size={18} />
+                      Save
+                    </a>
+                  </div>
+                  
+                  <button 
+                    onClick={() => { setAudioUrl(null); setRecordedBlob(null); setIsPlaying(false); }}
+                    className="text-[10px] text-slate-500 hover:text-red-400 font-bold uppercase tracking-widest transition-colors"
+                  >
+                    Discard Recording
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+
+
         {/* Visualizer */}
         <div className="relative w-full h-48 bg-black/40 rounded-2xl mb-8 border border-slate-800 overflow-hidden group">
           <canvas 
@@ -520,7 +648,7 @@ export default function App() {
         </div>
 
         {/* Controls Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-10">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-10">
           {/* Effects Sliders - Column 1 */}
           <div className="space-y-6 bg-slate-800/30 p-6 rounded-2xl border border-slate-800/50">
             <div className="flex items-center gap-4">
@@ -694,85 +822,10 @@ export default function App() {
               </label>
             </div>
           </div>
-
-          {/* Recording & Playback - Column 3 */}
-          <div className="flex flex-col justify-center items-center gap-6 bg-slate-800/30 p-6 rounded-2xl border border-slate-800/50">
-            <div className="flex gap-4">
-              {!isRecording ? (
-                <button 
-                  onClick={startRecording}
-                  className="w-20 h-20 bg-red-600 hover:bg-red-500 rounded-full flex items-center justify-center shadow-lg shadow-red-900/20 transition-all hover:scale-105 active:scale-95 group"
-                >
-                  <Mic size={32} className="group-hover:animate-pulse" />
-                </button>
-              ) : (
-                <button 
-                  onClick={stopRecording}
-                  className="w-20 h-20 bg-slate-200 hover:bg-white text-black rounded-full flex items-center justify-center shadow-lg transition-all hover:scale-105 active:scale-95"
-                >
-                  <Square size={32} fill="currentColor" />
-                </button>
-              )}
-            </div>
-            
-            <p className="text-slate-400 font-medium">
-              {isRecording ? "ریکارڈنگ ہو رہی ہے..." : "ریکارڈنگ شروع کریں"}
-            </p>
-
-            <AnimatePresence>
-              {audioUrl && (
-                <motion.div 
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.9 }}
-                  className="w-full space-y-4 pt-4 border-t border-slate-700/50"
-                >
-                    <div className="flex flex-col gap-2">
-                      <p className="text-[10px] text-emerald-400 text-center font-bold uppercase tracking-widest animate-pulse">
-                        مکسنگ موڈ فعال ہے - سلائیڈرز استعمال کریں
-                      </p>
-                      <button 
-                        onClick={playMixedAudio}
-                        className={`w-full py-3 rounded-xl flex items-center justify-center gap-2 font-semibold transition-all ${isPlaying ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/40' : 'bg-slate-700 text-slate-200 hover:bg-slate-600'}`}
-                      >
-                        {isPlaying ? <Square size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
-                        {isPlaying ? "سننا بند کریں" : "مکسنگ کے ساتھ سنیں"}
-                      </button>
-                    
-                    <button 
-                      onClick={() => recordedBlob && autoNormalize(recordedBlob)}
-                      disabled={isNormalizing}
-                      className="w-full py-2 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 rounded-xl text-xs font-medium transition-all flex items-center justify-center gap-2 border border-indigo-500/30"
-                    >
-                      <Sparkles size={14} className={isNormalizing ? "animate-spin" : ""} />
-                      {isNormalizing ? "متوازن کیا جا رہا ہے..." : "آواز متوازن کریں (Normalize)"}
-                    </button>
-                  </div>
-
-                  <div className="flex gap-3">
-                    <a 
-                      href={audioUrl} 
-                      download={`Saifia_Studio_${mode}_${new Date().getTime()}.webm`}
-                      className="flex-1 bg-blue-600 hover:bg-blue-500 py-3 rounded-xl flex items-center justify-center gap-2 font-semibold transition-colors text-sm"
-                    >
-                      <Download size={18} />
-                      محفوظ کریں (Save)
-                    </a>
-                    <button 
-                      onClick={() => { setAudioUrl(null); setRecordedBlob(null); setIsPlaying(false); }}
-                      className="p-3 bg-slate-700 hover:bg-red-900/40 hover:text-red-400 rounded-xl transition-all"
-                    >
-                      <Trash2 size={20} />
-                    </button>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
         </div>
 
         {/* Footer Info */}
-        <div className="text-center text-slate-500 text-sm">
+        <div className="text-center text-slate-500 text-sm mt-8">
           <p>© 2026 سیفیہ آڈیو سٹوڈیو - بہترین آواز، بہترین معیار</p>
         </div>
       </motion.div>
